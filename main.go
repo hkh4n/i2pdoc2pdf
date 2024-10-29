@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
@@ -159,12 +160,33 @@ func copyDir(source, destination string) {
 	fmt.Println("Directory copied successfully.")
 }
 
+// replaceURLForPlaceholders replaces {{ url_for('static', filename='path/to/image.png') }} with the relative path
+func replaceURLForPlaceholders(doc *goquery.Document) {
+	// Regular expression to match the url_for pattern
+	re := regexp.MustCompile(`{{\s*url_for\(\s*'static'\s*,\s*filename\s*=\s*'([^']+)'\s*\)\s*}}`)
+
+	// Find all img tags
+	doc.Find("img").Each(func(i int, s *goquery.Selection) {
+		src, exists := s.Attr("src")
+		if exists {
+			// Check if src matches the url_for pattern
+			matches := re.FindStringSubmatch(src)
+			if len(matches) == 2 {
+				// matches[1] contains the filename
+				newSrc := matches[1]
+				s.SetAttr("src", newSrc)
+				log.Printf("Replaced img src with relative path: %s", newSrc)
+			}
+		}
+	})
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	// Get docs
 	// Define the repository information
 	repo := RepositoryInfo{
-		URL:      "https://github.com/i2p/i2p.www.git", // Replace with actual URL
+		URL:      "https://github.com/i2p/i2p.www.git",
 		Branch:   "master",
 		CloneDir: "i2p-www-docs", // Local directory name
 	}
@@ -288,6 +310,9 @@ func main() {
 		doc.Find("meta").Remove()
 		doc.Find("iframe").Remove()
 		doc.Find("noscript").Remove()
+
+		// Replace url_for placeholders in img src attributes
+		replaceURLForPlaceholders(doc)
 
 		// Extract the body content
 		bodyContent := doc.Find("body").First()

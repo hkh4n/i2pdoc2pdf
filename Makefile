@@ -21,7 +21,6 @@ all: test build
 build:
 	mkdir -p $(BUILD_DIR)
 	$(GOBUILD) -o $(BUILD_DIR)/$(BINARY_NAME1) -v $(MAIN1)
-	cp convert.sh $(BUILD_DIR)/
 
 clean:
 	$(GOCLEAN)

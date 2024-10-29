@@ -69,39 +69,39 @@ func main() {
 	// Create combined HTML document
 	combinedHTML := strings.Builder{}
 	combinedHTML.WriteString(`
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>I2P Documentation</title>
-    <style>
-        body { 
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        .page-break { 
-            page-break-after: always;
-            height: 1px;
-        }
-        .chapter { 
-            margin-top: 30px;
-        }
-        pre {
-            background-color: #f5f5f5;
-            padding: 10px;
-            border-radius: 5px;
-            overflow-x: auto;
-        }
-        code {
-            font-family: monospace;
-        }
-    </style>
-</head>
-<body>
-<h1>I2P Documentation</h1>
-<div class="page-break"></div>
+	<!DOCTYPE html>
+	<html>
+	<head>
+		<meta charset="UTF-8">
+		<title>I2P Documentation</title>
+		<style>
+			body { 
+				font-family: Arial, sans-serif;
+				max-width: 800px;
+				margin: 0 auto;
+				padding: 20px;
+			}
+			.page-break { 
+				page-break-after: always;
+				height: 1px;
+			}
+			.chapter { 
+				margin-top: 30px;
+			}
+			pre {
+				background-color: #f5f5f5;
+				padding: 10px;
+				border-radius: 5px;
+				overflow-x: auto;
+			}
+			code {
+				font-family: monospace;
+			}
+		</style>
+	</head>
+	<body>
+	<h1>I2P Documentation</h1>
+	<div class="page-break"></div>
 `)
 
 	// Add table of contents

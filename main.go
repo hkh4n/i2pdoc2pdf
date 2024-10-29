@@ -139,6 +139,7 @@ func downloadAndProcessDocs(config DownloadConfig) error {
 	return nil
 }
 
+// IGNORE THIS (notes): wget http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.23_amd64.deb
 // cleanupDownloadDir removes incomplete or failed downloads
 func cleanupDownloadDir(dir string) error {
 	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {

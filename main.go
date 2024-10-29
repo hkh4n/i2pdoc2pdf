@@ -1,20 +1,16 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
+	"github.com/SebastiaanKlippert/go-wkhtmltopdf"
 	"io/ioutil"
 	"log"
 	"os"
 	"os/exec"
-	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"syscall"
-	"time"
-
-	"github.com/SebastiaanKlippert/go-wkhtmltopdf"
 )
 
 // findHTMLFiles returns a slice of HTML files, checking for index.html in directories
@@ -53,92 +49,6 @@ func findHTMLFiles(baseDir string) ([]string, error) {
 	return files, err
 }
 
-type DownloadConfig struct {
-	URL            string
-	OutputDir      string
-	MaxDepth       int
-	WaitSeconds    int
-	RateLimit      string
-	ConvertScript  string
-	TimeoutMinutes int
-}
-
-func downloadAndProcessDocs(config DownloadConfig) error {
-	// Create output directory if it doesn't exist
-	if err := os.MkdirAll(config.OutputDir, 0755); err != nil {
-		return fmt.Errorf("failed to create output directory: %w", err)
-	}
-
-	// Change to output directory
-	originalDir, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get current directory: %w", err)
-	}
-
-	if err := os.Chdir(config.OutputDir); err != nil {
-		return fmt.Errorf("failed to change to output directory: %w", err)
-	}
-	defer os.Chdir(originalDir)
-
-	// Prepare wget command
-	// Modified wget arguments to strictly target docs directory
-	args := []string{
-		"--recursive",
-		"--no-clobber",
-		"--page-requisites",
-		"--html-extension",
-		"--convert-links",
-		"--restrict-file-names=windows",
-		"--domains", "geti2p.net",
-		"--no-parent",
-		// Include only the docs directory
-		"--include-directories=/en/docs",
-		// Explicitly exclude other directories
-		"--exclude-directories=/en/get-involved,/en/blog,/en/research,/en/comparison,/en/about",
-		// Reject specific file patterns
-		"--reject=*get-involved*,*blog*,*research*,*comparison*,*about*",
-		fmt.Sprintf("--wait=%d", config.WaitSeconds),
-		fmt.Sprintf("--limit-rate=%s", config.RateLimit),
-		fmt.Sprintf("-l %d", config.MaxDepth),
-		config.URL,
-	}
-
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(),
-		time.Duration(config.TimeoutMinutes)*time.Minute)
-	defer cancel()
-
-	// Run wget command
-	fmt.Println("Starting wget download...")
-	cmd := exec.CommandContext(ctx, "wget", args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("wget command failed: %w", err)
-	}
-
-	// Find the downloaded directory
-	downloadedDir := filepath.Join(config.OutputDir, "geti2p.net")
-	if _, err := os.Stat(downloadedDir); err != nil {
-		return fmt.Errorf("downloaded directory not found: %w", err)
-	}
-
-	// Run convert script
-	if config.ConvertScript != "" {
-		fmt.Println("Running conversion script...")
-		convertCmd := exec.CommandContext(ctx, "bash", config.ConvertScript, downloadedDir)
-		convertCmd.Stdout = os.Stdout
-		convertCmd.Stderr = os.Stderr
-
-		if err := convertCmd.Run(); err != nil {
-			return fmt.Errorf("conversion script failed: %w", err)
-		}
-	}
-
-	return nil
-}
-
 // IGNORE THIS (notes): wget http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2.23_amd64.deb
 // cleanupDownloadDir removes incomplete or failed downloads
 func cleanupDownloadDir(dir string) error {
@@ -156,52 +66,138 @@ func cleanupDownloadDir(dir string) error {
 	})
 }
 
+// RepositoryInfo holds information about the Git repository
+type RepositoryInfo struct {
+	URL      string // e.g., "https://github.com/username/i2p.www.git"
+	Branch   string // e.g., "main"
+	CloneDir string // Local directory to clone into
+}
+
+// ExecuteCommand runs a shell command and returns its output or an error
+func ExecuteCommand(dir string, name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	// Run the command and capture any errors
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("command failed: %s %v, error: %v", name, args, err)
+	}
+	return nil
+}
+
+func CloneRepo(repo RepositoryInfo) error {
+	// Ensure the clone directory exists
+	if _, err := os.Stat(repo.CloneDir); os.IsNotExist(err) {
+		err := os.MkdirAll(repo.CloneDir, 0755)
+		if err != nil {
+			return fmt.Errorf("failed to create directory %s: %v", repo.CloneDir, err)
+		}
+	}
+
+	// Step 1: Initialize the Git repository
+	fmt.Println("Initializing Git repository...")
+	if err := ExecuteCommand(repo.CloneDir, "git", "init"); err != nil {
+		return err
+	}
+
+	// Step 2: Add remote origin
+	fmt.Println("Adding remote origin...")
+	if err := ExecuteCommand(repo.CloneDir, "git", "remote", "add", "origin", repo.URL); err != nil {
+		return err
+	}
+
+	// Step 5: Pull the specified branch
+	fmt.Printf("Pulling branch '%s'...\n", repo.Branch)
+	if err := ExecuteCommand(repo.CloneDir, "git", "pull", "origin", repo.Branch); err != nil {
+		return err
+	}
+
+	fmt.Println("Sparse clone completed successfully.")
+	return nil
+}
+
+func copyDir(source, destination string) {
+	// Define the source and destination paths
+	//source := "./i2p-www-docs/i2p2www/pages/site/docs"
+	//destination := "./docs"
+
+	var cmd *exec.Cmd
+
+	switch runtime.GOOS {
+	case "windows":
+		if _, err := os.Stat(destination); os.IsNotExist(err) {
+			err := os.MkdirAll(destination, 0755)
+			if err != nil {
+				log.Fatalf("Failed to create destination directory: %v", err)
+			}
+		}
+		cmd = exec.Command("robocopy", source, destination, "/E", "/COPYALL", "/MOVE", "/R:1", "/W:1")
+		// Option 2: Using PowerShell's Copy-Item
+		/*
+			cmd = exec.Command("powershell", "-Command",
+				fmt.Sprintf("Copy-Item -Path '%s' -Destination '%s' -Recurse -Force", source, destination))
+		*/
+	default:
+		// Assume Unix-like system, use cp -r
+		cmd = exec.Command("cp", "-r", source, destination)
+	}
+
+	// Set the standard output and error to the program's output
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	fmt.Printf("Executing command: %v\n", cmd.Args)
+
+	// Run the command
+	err := cmd.Run()
+	if err != nil {
+		log.Fatalf("Command execution failed: %v", err)
+	}
+
+	fmt.Println("Directory copied successfully.")
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	// Get docs
-
-	config := DownloadConfig{
-		URL:            "https://geti2p.net/en/docs",
-		OutputDir:      "./i2p-docs",
-		MaxDepth:       3,
-		WaitSeconds:    1,
-		RateLimit:      "200k",
-		ConvertScript:  "./convert.sh",
-		TimeoutMinutes: 30,
+	// Define the repository information
+	repo := RepositoryInfo{
+		URL:      "https://github.com/i2p/i2p.www.git", // Replace with actual URL
+		Branch:   "master",
+		CloneDir: "i2p-www-docs", // Local directory name
 	}
-	// Create a channel for handling interrupts
-	interrupt := make(chan os.Signal, 1)
-	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
 
-	// Create error channel
-	errChan := make(chan error, 1)
-
-	// Run download in goroutine
-	go func() {
-		errChan <- downloadAndProcessDocs(config)
-	}()
-
-	// Wait for either completion or interrupt
-	select {
-	case err := <-errChan:
-		if err != nil {
-			log.Printf("Error during download and conversion: %v", err)
-			// Attempt cleanup
-			if cleanErr := cleanupDownloadDir(config.OutputDir); cleanErr != nil {
-				log.Printf("Error during cleanup: %v", cleanErr)
-			}
-			os.Exit(1)
-		}
-		fmt.Println("Download and conversion completed successfully!")
-
-	case <-interrupt:
-		fmt.Println("\nReceived interrupt signal. Cleaning up...")
-		if err := cleanupDownloadDir(config.OutputDir); err != nil {
-			log.Printf("Error during cleanup: %v", err)
-		}
-		os.Exit(1)
+	// Get absolute path for CloneDir
+	absPath, err := filepath.Abs(repo.CloneDir)
+	if err != nil {
+		log.Fatalf("Failed to get absolute path: %v", err)
 	}
-	os.Exit(0)
+	repo.CloneDir = absPath
+
+	// Start the sparse clone process
+	// Check if the clone directory already exists
+	if _, err := os.Stat(repo.CloneDir); os.IsNotExist(err) {
+		// Directory does not exist, proceed to clone
+		fmt.Printf("Repository directory '%s' does not exist. Starting clone...\n", repo.CloneDir)
+		if err := CloneRepo(repo); err != nil {
+			log.Fatalf("Failed to clone repository: %v", err)
+		}
+	} else {
+		// Directory exists, skip cloning
+		fmt.Printf("Repository directory '%s' already exists. Skipping clone.\n", repo.CloneDir)
+	}
+	/*
+		if err := CloneSparseRepo(repo); err != nil {
+			log.Fatalf("Failed to clone repository: %v", err)
+		}
+
+	*/
+
+	fmt.Printf("The '%s' directory has been successfully cloned.")
+
+	copyDir("./i2p-www-docs/i2p2www/pages/site/docs", "./docs")
 
 	inputDir := "./docs"
 	outputFile := "i2p-documentation.pdf"

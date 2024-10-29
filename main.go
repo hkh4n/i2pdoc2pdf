@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"github.com/PuerkitoBio/goquery"
 	"io/ioutil"
 	"log"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/SebastiaanKlippert/go-wkhtmltopdf"
 )
@@ -48,10 +53,156 @@ func findHTMLFiles(baseDir string) ([]string, error) {
 	return files, err
 }
 
+type DownloadConfig struct {
+	URL            string
+	OutputDir      string
+	MaxDepth       int
+	WaitSeconds    int
+	RateLimit      string
+	ConvertScript  string
+	TimeoutMinutes int
+}
+
+func downloadAndProcessDocs(config DownloadConfig) error {
+	// Create output directory if it doesn't exist
+	if err := os.MkdirAll(config.OutputDir, 0755); err != nil {
+		return fmt.Errorf("failed to create output directory: %w", err)
+	}
+
+	// Change to output directory
+	originalDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	if err := os.Chdir(config.OutputDir); err != nil {
+		return fmt.Errorf("failed to change to output directory: %w", err)
+	}
+	defer os.Chdir(originalDir)
+
+	// Prepare wget command
+	// Modified wget arguments to strictly target docs directory
+	args := []string{
+		"--recursive",
+		"--no-clobber",
+		"--page-requisites",
+		"--html-extension",
+		"--convert-links",
+		"--restrict-file-names=windows",
+		"--domains", "geti2p.net",
+		"--no-parent",
+		// Include only the docs directory
+		"--include-directories=/en/docs",
+		// Explicitly exclude other directories
+		"--exclude-directories=/en/get-involved,/en/blog,/en/research,/en/comparison,/en/about",
+		// Reject specific file patterns
+		"--reject=*get-involved*,*blog*,*research*,*comparison*,*about*",
+		fmt.Sprintf("--wait=%d", config.WaitSeconds),
+		fmt.Sprintf("--limit-rate=%s", config.RateLimit),
+		fmt.Sprintf("-l %d", config.MaxDepth),
+		config.URL,
+	}
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(),
+		time.Duration(config.TimeoutMinutes)*time.Minute)
+	defer cancel()
+
+	// Run wget command
+	fmt.Println("Starting wget download...")
+	cmd := exec.CommandContext(ctx, "wget", args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("wget command failed: %w", err)
+	}
+
+	// Find the downloaded directory
+	downloadedDir := filepath.Join(config.OutputDir, "geti2p.net")
+	if _, err := os.Stat(downloadedDir); err != nil {
+		return fmt.Errorf("downloaded directory not found: %w", err)
+	}
+
+	// Run convert script
+	if config.ConvertScript != "" {
+		fmt.Println("Running conversion script...")
+		convertCmd := exec.CommandContext(ctx, "bash", config.ConvertScript, downloadedDir)
+		convertCmd.Stdout = os.Stdout
+		convertCmd.Stderr = os.Stderr
+
+		if err := convertCmd.Run(); err != nil {
+			return fmt.Errorf("conversion script failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// cleanupDownloadDir removes incomplete or failed downloads
+func cleanupDownloadDir(dir string) error {
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		// Remove temporary wget files
+		if strings.HasSuffix(path, ".tmp") || strings.HasSuffix(path, ".wget") {
+			if err := os.Remove(path); err != nil {
+				return fmt.Errorf("failed to remove temporary file %s: %w", path, err)
+			}
+		}
+		return nil
+	})
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	// Get docs
 
-	inputDir := "./docs" // Adjust this to your docs directory
+	config := DownloadConfig{
+		URL:            "https://geti2p.net/en/docs",
+		OutputDir:      "./i2p-docs",
+		MaxDepth:       3,
+		WaitSeconds:    1,
+		RateLimit:      "200k",
+		ConvertScript:  "./convert.sh",
+		TimeoutMinutes: 30,
+	}
+	// Create a channel for handling interrupts
+	interrupt := make(chan os.Signal, 1)
+	signal.Notify(interrupt, os.Interrupt, syscall.SIGTERM)
+
+	// Create error channel
+	errChan := make(chan error, 1)
+
+	// Run download in goroutine
+	go func() {
+		errChan <- downloadAndProcessDocs(config)
+	}()
+
+	// Wait for either completion or interrupt
+	select {
+	case err := <-errChan:
+		if err != nil {
+			log.Printf("Error during download and conversion: %v", err)
+			// Attempt cleanup
+			if cleanErr := cleanupDownloadDir(config.OutputDir); cleanErr != nil {
+				log.Printf("Error during cleanup: %v", cleanErr)
+			}
+			os.Exit(1)
+		}
+		fmt.Println("Download and conversion completed successfully!")
+
+	case <-interrupt:
+		fmt.Println("\nReceived interrupt signal. Cleaning up...")
+		if err := cleanupDownloadDir(config.OutputDir); err != nil {
+			log.Printf("Error during cleanup: %v", err)
+		}
+		os.Exit(1)
+	}
+	os.Exit(0)
+
+	inputDir := "./docs"
 	outputFile := "i2p-documentation.pdf"
 
 	// Find all HTML files
